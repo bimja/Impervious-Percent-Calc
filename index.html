@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <title>MDI Site & Addition Tool - Polygon + Impervious</title>
 
-  <!-- ==== EMBEDDED STYLES ==== -->
   <style>
     body {
       margin: 0;
@@ -126,6 +125,11 @@
       margin-right: 8px;
       display: inline-block;
     }
+
+    #rotation-input:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   </style>
 
   <!-- PDF.js from CDN -->
@@ -189,7 +193,7 @@
         <label class="field-label" for="rotation-input">
           Rotation (degrees):
         </label>
-        <input type="range" id="rotation-input" min="0" max="359" value="0" />
+        <input type="range" id="rotation-input" min="0" max="359" value="0" disabled />
         <span id="rotation-value">0°</span>
 
         <button id="add-polygon-btn">Add polygon</button>
@@ -254,7 +258,6 @@
     </div>
   </div>
 
-  <!-- ==== EMBEDDED SCRIPT ==== -->
   <script>
     // ---------- Canvas & global state ----------
     const canvas = document.getElementById("survey-canvas");
@@ -288,7 +291,11 @@
     let originalOrigin = null;
     let originalPoint = null;
 
-    // Resize canvas to fill container
+    // ---------- DOM refs ----------
+    const rotationInput = document.getElementById("rotation-input");
+    const rotationValueSpan = document.getElementById("rotation-value");
+
+    // ---------- Canvas sizing ----------
     function resizeCanvas() {
       const rect = canvas.parentElement.getBoundingClientRect();
       canvas.width = rect.width;
@@ -406,29 +413,43 @@
       };
     }
 
+    function setActivePolygon(polygonOrNull) {
+      if (!polygonOrNull) {
+        activePolygonId = null;
+        rotationInput.disabled = true;
+        rotationInput.value = 0;
+        rotationValueSpan.textContent = "0°";
+        return;
+      }
+      activePolygonId = polygonOrNull.id;
+      rotationInput.disabled = false;
+      rotationInput.value = polygonOrNull.rotation || 0;
+      rotationValueSpan.textContent = (polygonOrNull.rotation || 0) + "°";
+    }
+
     document.getElementById("add-polygon-btn").addEventListener("click", () => {
       const type = document.getElementById("polygon-type-select").value;
       const lengthFeet = parseFloat(document.getElementById("length-input").value) || 20;
       const widthFeet  = parseFloat(document.getElementById("width-input").value) || 12;
-      const rotation   = parseFloat(document.getElementById("rotation-input").value) || 0;
+      const rotation   = parseFloat(rotationInput.value) || 0;
 
       const poly = createPolygon(type, lengthFeet, widthFeet, rotation);
       polygons.push(poly);
-      activePolygonId = poly.id;
+      setActivePolygon(poly);
       render();
     });
 
     document.getElementById("delete-active-polygon-btn").addEventListener("click", () => {
       if (!activePolygonId) return;
       polygons = polygons.filter(p => p.id !== activePolygonId);
-      activePolygonId = null;
+      setActivePolygon(null);
       render();
     });
 
     // Rotation slider controls active polygon
-    document.getElementById("rotation-input").addEventListener("input", (e) => {
+    rotationInput.addEventListener("input", (e) => {
       const val = parseFloat(e.target.value) || 0;
-      document.getElementById("rotation-value").textContent = val + "°";
+      rotationValueSpan.textContent = val + "°";
       const active = polygons.find(p => p.id === activePolygonId);
       if (active) {
         active.rotation = val;
@@ -498,7 +519,7 @@
       ctx.restore();
     }
 
-    // Polygon area in feet^2
+    // Polygon area in feet^2 (local coordinates)
     function polygonAreaFeet(points) {
       let sum = 0;
       for (let i = 0; i < points.length; i++) {
@@ -603,7 +624,13 @@
         ctx.lineTo(ox2, oy2);
         ctx.stroke();
 
-        const angle = Math.atan2(oy2 - oy1, ox2 - ox1);
+        let angle = Math.atan2(oy2 - oy1, ox2 - ox1);
+
+        // Keep text upright
+        if (angle > Math.PI / 2 || angle < -Math.PI / 2) {
+          angle += Math.PI;
+        }
+
         drawArrowhead(ctx, ox1, oy1, angle + Math.PI);
         drawArrowhead(ctx, ox2, oy2, angle);
 
@@ -633,13 +660,14 @@
 
     function hitTestVertex(mouseX, mouseY, polygon, scale, radiusPx = 10) {
       const local = screenToLocal(mouseX, mouseY, polygon);
+      const localRadius = radiusPx / scale; // make radius independent of scale
+      const r2 = localRadius * localRadius;
+
       for (let i = 0; i < polygon.points.length; i++) {
         const p = polygon.points[i];
-        const px = p.x * scale;
-        const py = p.y * scale;
-        const dx = local.x - px;
-        const dy = local.y - py;
-        if (dx * dx + dy * dy <= radiusPx * radiusPx) {
+        const dx = local.x - p.x * scale;
+        const dy = local.y - p.y * scale;
+        if (dx * dx + dy * dy <= r2) {
           return i;
         }
       }
@@ -670,14 +698,16 @@
       draggingPolygon = null;
       draggingVertexIndex = -1;
 
-      // Check polygons from topmost (last) to bottom
+      // topmost first
       for (let i = polygons.length - 1; i >= 0; i--) {
         const poly = polygons[i];
 
         // vertex hit test
-        const idx = hitTestVertex(mouseX, mouseY, poly, scaleFactor);
+        const idx = hitTestVertex(mouseX, mouseY, poly, scaleIsSet ? scaleFactor : 10);
         if (idx !== -1) {
-          activePolygonId = poly.id;
+          setActivePolygon(poly);
+          // bring to front
+          polygons.push(polygons.splice(i, 1)[0]);
           draggingPolygon = poly;
           draggingVertexIndex = idx;
           dragStart = { x: mouseX, y: mouseY };
@@ -688,8 +718,10 @@
 
         // polygon interior hit test
         const local = screenToLocal(mouseX, mouseY, poly);
-        if (pointInPolygonLocal(local, poly, scaleFactor)) {
-          activePolygonId = poly.id;
+        const useScale = scaleIsSet ? scaleFactor : 10;
+        if (pointInPolygonLocal(local, poly, useScale)) {
+          setActivePolygon(poly);
+          polygons.push(polygons.splice(i, 1)[0]);
           draggingPolygon = poly;
           draggingVertexIndex = -1;
           dragStart = { x: mouseX, y: mouseY };
@@ -699,7 +731,7 @@
         }
       }
 
-      activePolygonId = null;
+      setActivePolygon(null);
       render();
     });
 
@@ -723,9 +755,10 @@
         const moveLocalX = dx * Math.cos(angle) - dy * Math.sin(angle);
         const moveLocalY = dx * Math.sin(angle) + dy * Math.cos(angle);
 
+        const scale = scaleIsSet ? scaleFactor : 10;
         draggingPolygon.points[draggingVertexIndex] = {
-          x: originalPoint.x + moveLocalX / scaleFactor,
-          y: originalPoint.y + moveLocalY / scaleFactor
+          x: originalPoint.x + moveLocalX / scale,
+          y: originalPoint.y + moveLocalY / scale
         };
       }
 
@@ -806,17 +839,14 @@
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
 
-      if (scaleIsSet) {
-        for (const poly of polygons) {
-          drawPolygonShape(ctx, poly, scaleFactor);
-          drawPolygonHandles(ctx, poly, scaleFactor);
-          drawDimensionLabels(ctx, poly, scaleFactor);
-          drawSquareFootageNote(ctx, poly, scaleFactor);
-        }
-      } else {
-        for (const poly of polygons) {
-          drawPolygonShape(ctx, poly, 10);
-          drawPolygonHandles(ctx, poly, 10);
+      const drawScale = scaleIsSet ? scaleFactor : 10;
+
+      for (const poly of polygons) {
+        drawPolygonShape(ctx, poly, drawScale);
+        drawPolygonHandles(ctx, poly, drawScale);
+        if (scaleIsSet) {
+          drawDimensionLabels(ctx, poly, drawScale);
+          drawSquareFootageNote(ctx, poly, drawScale);
         }
       }
 
