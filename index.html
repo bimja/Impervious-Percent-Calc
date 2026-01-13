@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MDI Site & Addition Tool - Polygon + Impervious</title>
+
+  <!-- ==== EMBEDDED STYLES ==== -->
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background-color: #f5f5f5;
+      color: #222;
+    }
+
+    #app-container {
+      display: flex;
+      height: 100vh;
+    }
+
+    #sidebar {
+      width: 340px;
+      background-color: #ffffff;
+      border-right: 1px solid #ddd;
+      padding: 16px;
+      box-sizing: border-box;
+      overflow-y: auto;
+    }
+
+    #sidebar h1 {
+      font-size: 20px;
+      margin-top: 0;
+      margin-bottom: 16px;
+    }
+
+    .panel {
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 12px;
+      margin-bottom: 12px;
+      background-color: #fafafa;
+    }
+
+    .panel h2 {
+      font-size: 16px;
+      margin: 0 0 8px;
+    }
+
+    .field-label {
+      display: block;
+      margin-top: 8px;
+      margin-bottom: 4px;
+      font-size: 13px;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    .info-line {
+      font-size: 13px;
+      margin-top: 6px;
+    }
+
+    button {
+      display: inline-block;
+      margin-top: 8px;
+      margin-right: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      cursor: pointer;
+      border-radius: 3px;
+      border: 1px solid #aaa;
+      background-color: #eee;
+    }
+
+    button:hover {
+      background-color: #e0e0e0;
+    }
+
+    input[type="number"],
+    input[type="text"],
+    input[type="range"],
+    select {
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    #canvas-container {
+      flex: 1;
+      position: relative;
+      background-color: #ccc;
+    }
+
+    #survey-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background-color: #fff;
+    }
+
+    #canvas-overlay-hint {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      color: #fff;
+      padding: 4px 8px;
+      font-size: 12px;
+      border-radius: 3px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+
+    .legend-color {
+      width: 16px;
+      height: 16px;
+      border: 1px solid #333;
+      margin-right: 8px;
+      display: inline-block;
+    }
+  </style>
+
+  <!-- PDF.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+  </script>
+</head>
+<body>
+  <div id="app-container">
+    <div id="sidebar">
+      <h1>MDI Site & Addition Tool</h1>
+
+      <div class="panel">
+        <h2>1. Survey PDF</h2>
+        <label class="field-label">Upload survey PDF:</label>
+        <input type="file" id="pdf-file-input" accept="application/pdf" />
+        <p class="hint">
+          After upload, the first page will appear as the background.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>2. Set scale</h2>
+        <button id="start-scale-btn">Start scale picking</button>
+        <p class="hint">
+          Click two points on the canvas with a known real-world distance.
+          You’ll be prompted for the distance (in feet).
+        </p>
+        <div class="info-line">
+          Scale: <span id="scale-display">not set</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>3. Polygons (site & impervious)</h2>
+
+        <label class="field-label" for="polygon-type-select">
+          New polygon type:
+        </label>
+        <select id="polygon-type-select">
+          <option value="site">Site boundary</option>
+          <option value="building" selected>Main building / addition</option>
+          <option value="driveway">Driveway</option>
+          <option value="patio">Patio / deck</option>
+          <option value="impervious">Other impervious</option>
+          <option value="pervious">Pervious / landscape</option>
+        </select>
+
+        <label class="field-label" for="length-input">
+          Initial length (ft):
+        </label>
+        <input type="number" id="length-input" min="1" step="1" value="20" />
+
+        <label class="field-label" for="width-input">
+          Initial width (ft):
+        </label>
+        <input type="number" id="width-input" min="1" step="1" value="12" />
+
+        <label class="field-label" for="rotation-input">
+          Rotation (degrees):
+        </label>
+        <input type="range" id="rotation-input" min="0" max="359" value="0" />
+        <span id="rotation-value">0°</span>
+
+        <button id="add-polygon-btn">Add polygon</button>
+        <button id="delete-active-polygon-btn">Delete selected</button>
+
+        <p class="hint">
+          Click “Add polygon” to place a new shape of the selected type.
+          Click a polygon to select it (thicker outline).
+          Drag inside a polygon to move it; drag white handles to reshape.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>4. Export</h2>
+        <button id="export-btn">Export as PNG</button>
+        <p class="hint">
+          Exports the current view (survey + polygons) as an image.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>5. Impervious summary</h2>
+
+        <label class="field-label" for="max-impervious-input">
+          Max allowable impervious (%):
+        </label>
+        <input type="number" id="max-impervious-input" min="1" max="100" value="40" />
+
+        <div class="info-line">Site area: <span id="site-area-display">—</span></div>
+        <div class="info-line">Impervious area: <span id="impervious-area-display">—</span></div>
+        <div class="info-line">Impervious %: <span id="impervious-percent-display">—</span></div>
+
+        <div class="info-line">
+          Compliance: <span id="impervious-status" style="font-weight:bold">—</span>
+        </div>
+
+        <p class="hint">
+          “Site boundary” polygon defines lot area.
+          Impervious includes building, driveway, patio, and other impervious types.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>Legend</h2>
+        <div class="legend-item"><span class="legend-color" style="background:#0070c0"></span>Site boundary</div>
+        <div class="legend-item"><span class="legend-color" style="background:#c00000"></span>Building / Addition</div>
+        <div class="legend-item"><span class="legend-color" style="background:#808080"></span>Driveway</div>
+        <div class="legend-item"><span class="legend-color" style="background:#c09040"></span>Patio / Deck</div>
+        <div class="legend-item"><span class="legend-color" style="background:#aa5500"></span>Other impervious</div>
+        <div class="legend-item"><span class="legend-color" style="background:#00a000"></span>Pervious / Landscape</div>
+        <p class="hint">
+          Active polygon shows with thicker outline; handles appear as white circles.
+        </p>
+      </div>
+    </div>
+
+    <div id="canvas-container">
+      <canvas id="survey-canvas"></canvas>
+      <div id="canvas-overlay-hint">
+        Click to pick scale points; click/drag polygons and vertices to edit.
+      </div>
+    </div>
+  </div>
+
+  <!-- ==== EMBEDDED SCRIPT ==== -->
+  <script>
+    // ---------- Canvas & global state ----------
+    const canvas = document.getElementById("survey-canvas");
+    const ctx = canvas.getContext("2d");
+
+    let pdfDoc = null;
+    let pdfPage = null;
+    let pdfScale = 1;
+
+    let scaleFactor = 1;   // canvas pixels per foot
+    let scaleIsSet = false;
+
+    const POLYGON_COLORS = {
+      site: "#0070c0",
+      building: "#c00000",
+      driveway: "#808080",
+      patio: "#c09040",
+      impervious: "#aa5500",
+      pervious: "#00a000"
+    };
+
+    let polygons = [];
+    let activePolygonId = null;
+
+    let isPickingScale = false;
+    let scalePoints = [];
+
+    let draggingPolygon = null;
+    let draggingVertexIndex = -1;
+    let dragStart = { x: 0, y: 0 };
+    let originalOrigin = null;
+    let originalPoint = null;
+
+    // Resize canvas to fill container
+    function resizeCanvas() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+      setupPdfViewport();
+      render();
+    }
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+
+    // ---------- PDF loading ----------
+    document.getElementById("pdf-file-input").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const fileReader = new FileReader();
+      fileReader.onload = async function () {
+        const typedArray = new Uint8Array(this.result);
+        pdfDoc = await pdfjsLib.getDocument({ data: typedArray }).promise;
+        pdfPage = await pdfDoc.getPage(1);
+        setupPdfViewport();
+      };
+      fileReader.readAsArrayBuffer(file);
+    });
+
+    function setupPdfViewport() {
+      if (!pdfPage) return;
+      const containerWidth = canvas.width;
+      const containerHeight = canvas.height;
+
+      const unscaledViewport = pdfPage.getViewport({ scale: 1 });
+      const pdfWidth = unscaledViewport.width;
+      const pdfHeight = unscaledViewport.height;
+
+      const scale = Math.min(containerWidth / pdfWidth, containerHeight / pdfHeight);
+      pdfScale = scale;
+
+      render();
+    }
+
+    async function drawPDF() {
+      if (!pdfPage) return;
+      const viewport = pdfPage.getViewport({ scale: pdfScale });
+      const renderContext = {
+        canvasContext: ctx,
+        viewport: viewport,
+      };
+      await pdfPage.render(renderContext).promise;
+    }
+
+    // ---------- Scale picking ----------
+    document.getElementById("start-scale-btn").addEventListener("click", () => {
+      isPickingScale = true;
+      scalePoints = [];
+      document.getElementById("scale-display").textContent = "picking...";
+    });
+
+    canvas.addEventListener("click", (e) => {
+      if (!isPickingScale) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      scalePoints.push({ x, y });
+
+      if (scalePoints.length === 2) {
+        const dx = scalePoints[1].x - scalePoints[0].x;
+        const dy = scalePoints[1].y - scalePoints[0].y;
+        const pixelDist = Math.sqrt(dx * dx + dy * dy);
+
+        const realDist = parseFloat(
+          prompt("Enter real-world distance between these points (in feet):", "20")
+        );
+
+        if (!isNaN(realDist) && realDist > 0) {
+          scaleFactor = pixelDist / realDist;
+          scaleIsSet = true;
+          document.getElementById("scale-display").textContent =
+            scaleFactor.toFixed(2) + " px/ft";
+        } else {
+          alert("Invalid distance.");
+          document.getElementById("scale-display").textContent = "not set";
+          scaleIsSet = false;
+        }
+
+        isPickingScale = false;
+        scalePoints = [];
+        render();
+      } else {
+        render();
+      }
+    });
+
+    // ---------- Polygon creation ----------
+    function createPolygon(type, lengthFeet, widthFeet, rotationDegrees) {
+      const origin = {
+        x: canvas.width * 0.5,
+        y: canvas.height * 0.5
+      };
+
+      const id = "poly_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+
+      return {
+        id,
+        type,
+        origin,
+        rotation: rotationDegrees || 0,
+        color: POLYGON_COLORS[type] || "#ff0000",
+        points: [
+          { x: 0,           y: 0 },
+          { x: lengthFeet,  y: 0 },
+          { x: lengthFeet,  y: widthFeet },
+          { x: 0,           y: widthFeet }
+        ]
+      };
+    }
+
+    document.getElementById("add-polygon-btn").addEventListener("click", () => {
+      const type = document.getElementById("polygon-type-select").value;
+      const lengthFeet = parseFloat(document.getElementById("length-input").value) || 20;
+      const widthFeet  = parseFloat(document.getElementById("width-input").value) || 12;
+      const rotation   = parseFloat(document.getElementById("rotation-input").value) || 0;
+
+      const poly = createPolygon(type, lengthFeet, widthFeet, rotation);
+      polygons.push(poly);
+      activePolygonId = poly.id;
+      render();
+    });
+
+    document.getElementById("delete-active-polygon-btn").addEventListener("click", () => {
+      if (!activePolygonId) return;
+      polygons = polygons.filter(p => p.id !== activePolygonId);
+      activePolygonId = null;
+      render();
+    });
+
+    // Rotation slider controls active polygon
+    document.getElementById("rotation-input").addEventListener("input", (e) => {
+      const val = parseFloat(e.target.value) || 0;
+      document.getElementById("rotation-value").textContent = val + "°";
+      const active = polygons.find(p => p.id === activePolygonId);
+      if (active) {
+        active.rotation = val;
+        render();
+      }
+    });
+
+    document.getElementById("max-impervious-input").addEventListener("input", () => {
+      updateImperviousSummary();
+    });
+
+    // ---------- Drawing helpers ----------
+    function drawArrowhead(ctx, x, y, angle, size = 10) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(-size, size / 2);
+      ctx.lineTo(-size, -size / 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawPolygonShape(ctx, polygon, scale) {
+      const { origin, rotation, points, color, id } = polygon;
+
+      ctx.save();
+      ctx.translate(origin.x, origin.y);
+      ctx.rotate(rotation * Math.PI / 180);
+
+      ctx.beginPath();
+      ctx.moveTo(points[0].x * scale, points[0].y * scale);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x * scale, points[i].y * scale);
+      }
+      ctx.closePath();
+
+      ctx.strokeStyle = color || "red";
+      ctx.lineWidth = (id === activePolygonId) ? 3 : 2;
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    function drawPolygonHandles(ctx, polygon, scale) {
+      const { origin, rotation, points, id } = polygon;
+
+      ctx.save();
+      ctx.translate(origin.x, origin.y);
+      ctx.rotate(rotation * Math.PI / 180);
+
+      ctx.fillStyle = (id === activePolygonId) ? "#ffffcc" : "white";
+      ctx.strokeStyle = "black";
+      ctx.lineWidth = 1.5;
+
+      for (const p of points) {
+        const px = p.x * scale;
+        const py = p.y * scale;
+        ctx.beginPath();
+        ctx.arc(px, py, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    // Polygon area in feet^2
+    function polygonAreaFeet(points) {
+      let sum = 0;
+      for (let i = 0; i < points.length; i++) {
+        const j = (i + 1) % points.length;
+        sum += points[i].x * points[j].y - points[j].x * points[i].y;
+      }
+      return Math.abs(sum) / 2;
+    }
+
+    // Bounding box in local space (feet)
+    function polygonBounds(points) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const p of points) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+      return { minX, minY, maxX, maxY };
+    }
+
+    function drawSquareFootageNote(ctx, polygon, scale) {
+      const { origin, rotation, points } = polygon;
+
+      const areaFeet = polygonAreaFeet(points);
+      const sqft = Math.round(areaFeet);
+
+      const bounds = polygonBounds(points);
+      const pxW = (bounds.maxX - bounds.minX) * scale;
+      const pxH = (bounds.maxY - bounds.minY) * scale;
+
+      const minSize = 80; // px
+      const fitsInside = pxW > minSize && pxH > minSize;
+
+      ctx.save();
+      ctx.translate(origin.x, origin.y);
+      ctx.rotate(rotation * Math.PI / 180);
+
+      ctx.fillStyle = "black";
+      ctx.font = "14px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      if (fitsInside) {
+        const centerX = (bounds.minX + bounds.maxX) * 0.5 * scale;
+        const centerY = (bounds.minY + bounds.maxY) * 0.5 * scale;
+        ctx.fillText(sqft + " sq ft", centerX, centerY);
+      } else {
+        const labelX = bounds.maxX * scale + 40;
+        const labelY = bounds.minY * scale - 20;
+        ctx.fillText(sqft + " sq ft", labelX, labelY);
+      }
+
+      ctx.restore();
+    }
+
+    function drawDimensionLabels(ctx, polygon, scale) {
+      const { origin, rotation, points } = polygon;
+
+      ctx.save();
+      ctx.translate(origin.x, origin.y);
+      ctx.rotate(rotation * Math.PI / 180);
+
+      ctx.strokeStyle = "black";
+      ctx.fillStyle = "black";
+      ctx.lineWidth = 1.5;
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+
+      const offset = 18; // px away from edge
+
+      for (let i = 0; i < points.length; i++) {
+        const j = (i + 1) % points.length;
+        const p1 = points[i];
+        const p2 = points[j];
+
+        const x1 = p1.x * scale;
+        const y1 = p1.y * scale;
+        const x2 = p2.x * scale;
+        const y2 = p2.y * scale;
+
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const lengthPx = Math.sqrt(dx * dx + dy * dy);
+        if (lengthPx < 10) continue;
+
+        const lengthFeet = Math.sqrt(
+          Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2)
+        );
+
+        const nx = -dy / lengthPx;
+        const ny = dx / lengthPx;
+
+        const ox1 = x1 + nx * offset;
+        const oy1 = y1 + ny * offset;
+        const ox2 = x2 + nx * offset;
+        const oy2 = y2 + ny * offset;
+
+        ctx.beginPath();
+        ctx.moveTo(ox1, oy1);
+        ctx.lineTo(ox2, oy2);
+        ctx.stroke();
+
+        const angle = Math.atan2(oy2 - oy1, ox2 - ox1);
+        drawArrowhead(ctx, ox1, oy1, angle + Math.PI);
+        drawArrowhead(ctx, ox2, oy2, angle);
+
+        const mx = (ox1 + ox2) / 2;
+        const my = (oy1 + oy2) / 2;
+
+        ctx.save();
+        ctx.translate(mx, my);
+        ctx.rotate(angle);
+        ctx.fillText(lengthFeet.toFixed(1) + "'", 0, -10);
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    // ---------- Hit testing / interaction ----------
+    function screenToLocal(x, y, polygon) {
+      const angle = -polygon.rotation * Math.PI / 180;
+      const dx = x - polygon.origin.x;
+      const dy = y - polygon.origin.y;
+      return {
+        x:  dx * Math.cos(angle) - dy * Math.sin(angle),
+        y:  dx * Math.sin(angle) + dy * Math.cos(angle)
+      };
+    }
+
+    function hitTestVertex(mouseX, mouseY, polygon, scale, radiusPx = 10) {
+      const local = screenToLocal(mouseX, mouseY, polygon);
+      for (let i = 0; i < polygon.points.length; i++) {
+        const p = polygon.points[i];
+        const px = p.x * scale;
+        const py = p.y * scale;
+        const dx = local.x - px;
+        const dy = local.y - py;
+        if (dx * dx + dy * dy <= radiusPx * radiusPx) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    function pointInPolygonLocal(local, polygon, scale) {
+      const pts = polygon.points.map(p => ({ x: p.x * scale, y: p.y * scale }));
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const xi = pts[i].x, yi = pts[i].y;
+        const xj = pts[j].x, yj = pts[j].y;
+
+        const intersect = ((yi > local.y) !== (yj > local.y)) &&
+          (local.x < (xj - xi) * (local.y - yi) / (yj - yi + 1e-9) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    canvas.addEventListener("mousedown", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      if (!polygons.length) return;
+
+      draggingPolygon = null;
+      draggingVertexIndex = -1;
+
+      // Check polygons from topmost (last) to bottom
+      for (let i = polygons.length - 1; i >= 0; i--) {
+        const poly = polygons[i];
+
+        // vertex hit test
+        const idx = hitTestVertex(mouseX, mouseY, poly, scaleFactor);
+        if (idx !== -1) {
+          activePolygonId = poly.id;
+          draggingPolygon = poly;
+          draggingVertexIndex = idx;
+          dragStart = { x: mouseX, y: mouseY };
+          originalPoint = { ...poly.points[idx] };
+          render();
+          return;
+        }
+
+        // polygon interior hit test
+        const local = screenToLocal(mouseX, mouseY, poly);
+        if (pointInPolygonLocal(local, poly, scaleFactor)) {
+          activePolygonId = poly.id;
+          draggingPolygon = poly;
+          draggingVertexIndex = -1;
+          dragStart = { x: mouseX, y: mouseY };
+          originalOrigin = { ...poly.origin };
+          render();
+          return;
+        }
+      }
+
+      activePolygonId = null;
+      render();
+    });
+
+    canvas.addEventListener("mousemove", (e) => {
+      if (!draggingPolygon) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const dx = mouseX - dragStart.x;
+      const dy = mouseY - dragStart.y;
+
+      if (draggingVertexIndex === -1) {
+        draggingPolygon.origin = {
+          x: originalOrigin.x + dx,
+          y: originalOrigin.y + dy
+        };
+      } else {
+        const angle = -draggingPolygon.rotation * Math.PI / 180;
+        const moveLocalX = dx * Math.cos(angle) - dy * Math.sin(angle);
+        const moveLocalY = dx * Math.sin(angle) + dy * Math.cos(angle);
+
+        draggingPolygon.points[draggingVertexIndex] = {
+          x: originalPoint.x + moveLocalX / scaleFactor,
+          y: originalPoint.y + moveLocalY / scaleFactor
+        };
+      }
+
+      render();
+    });
+
+    canvas.addEventListener("mouseup", () => {
+      draggingPolygon = null;
+      draggingVertexIndex = -1;
+    });
+
+    canvas.addEventListener("mouseleave", () => {
+      draggingPolygon = null;
+      draggingVertexIndex = -1;
+    });
+
+    // ---------- Impervious summary ----------
+    function updateImperviousSummary() {
+      const sitePoly = polygons.find(p => p.type === "site");
+      const siteArea = sitePoly ? polygonAreaFeet(sitePoly.points) : null;
+
+      const imperviousTypes = ["building", "driveway", "patio", "impervious"];
+      const imperviousArea = polygons
+        .filter(p => imperviousTypes.includes(p.type))
+        .reduce((sum, p) => sum + polygonAreaFeet(p.points), 0);
+
+      const siteSpan = document.getElementById("site-area-display");
+      const impSpan = document.getElementById("impervious-area-display");
+      const pctSpan = document.getElementById("impervious-percent-display");
+      const statusSpan = document.getElementById("impervious-status");
+
+      if (siteArea && siteArea > 0) {
+        siteSpan.textContent = Math.round(siteArea) + " sq ft";
+        impSpan.textContent = Math.round(imperviousArea) + " sq ft";
+
+        const pct = (imperviousArea / siteArea) * 100;
+        pctSpan.textContent = pct.toFixed(1) + " %";
+
+        const maxPct = parseFloat(document.getElementById("max-impervious-input").value) || 0;
+
+        if (maxPct > 0) {
+          if (pct <= maxPct) {
+            statusSpan.textContent = "PASS";
+            statusSpan.style.color = "green";
+          } else {
+            statusSpan.textContent = "FAIL";
+            statusSpan.style.color = "red";
+          }
+        } else {
+          statusSpan.textContent = "—";
+          statusSpan.style.color = "black";
+        }
+      } else {
+        siteSpan.textContent = "—";
+        impSpan.textContent = Math.round(imperviousArea) + " sq ft";
+        pctSpan.textContent = "—";
+        statusSpan.textContent = "—";
+        statusSpan.style.color = "black";
+      }
+    }
+
+    // ---------- Export PNG ----------
+    document.getElementById("export-btn").addEventListener("click", () => {
+      const link = document.createElement("a");
+      link.download = "mdi-site-addition.png";
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    });
+
+    // ---------- Main render loop ----------
+    async function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (pdfPage) {
+        await drawPDF();
+      } else {
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      if (scaleIsSet) {
+        for (const poly of polygons) {
+          drawPolygonShape(ctx, poly, scaleFactor);
+          drawPolygonHandles(ctx, poly, scaleFactor);
+          drawDimensionLabels(ctx, poly, scaleFactor);
+          drawSquareFootageNote(ctx, poly, scaleFactor);
+        }
+      } else {
+        for (const poly of polygons) {
+          drawPolygonShape(ctx, poly, 10);
+          drawPolygonHandles(ctx, poly, 10);
+        }
+      }
+
+      if (isPickingScale && scalePoints.length === 1) {
+        ctx.fillStyle = "rgba(0, 0, 255, 0.6)";
+        ctx.beginPath();
+        ctx.arc(scalePoints[0].x, scalePoints[0].y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      updateImperviousSummary();
+    }
+
+    render();
+  </script>
+</body>
+</html>
