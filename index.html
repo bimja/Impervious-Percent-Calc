@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -53,13 +54,13 @@
         let clickTimer = null;
 
         const polygonColors = {
-            'site': 'rgba(0, 0, 255, 0.25)',
-            'building': 'rgba(220, 20, 60, 0.35)',
-            'driveway': 'rgba(255, 140, 0, 0.35)',
-            'patio': 'rgba(148, 0, 211, 0.3)',
-            'other-impervious': 'rgba(105, 105, 105, 0.4)',
-            'pervious': 'rgba(34, 139, 34, 0.25)'
-        };
+    'site':             'rgba(0,   0,   255, 0.55)',   // medium blue
+    'building':         'rgba(220, 20,  60,  0.70)',   // strong red
+    'driveway':         'rgba(255, 140, 0,   0.70)',   // strong orange
+    'patio':            'rgba(148, 0,   211, 0.65)',   // strong purple
+    'other-impervious': 'rgba(105, 105, 105, 0.75)',   // strong gray
+    'pervious':         'rgba(34,  139, 34,  0.55)'    // medium green
+};
 
         // Populate legend
         const legendDiv = document.getElementById('legend');
@@ -207,57 +208,100 @@
         // Mouse / drawing / editing logic (unchanged from previous)
         // ───────────────────────────────────────────────
 
-        canvas.on('mouse:down', function(e) {
-            if (isSettingScale) {
-                scalePoints.push(e.pointer);
-                if (scalePoints.length === 2) {
-                    const pixelDist = Math.hypot(
-                        scalePoints[1].x - scalePoints[0].x,
-                        scalePoints[1].y - scalePoints[0].y
-                    );
-                    const realDist = parseFloat(prompt('Enter real-world distance in feet between the two points:'));
-                    if (!isNaN(realDist) && realDist > 0) {
-                        scale = realDist / pixelDist;
-                        alert(`Scale set: 1 pixel = ${scale.toFixed(4)} ft`);
-                        updateSummary();
-                    }
-                    isSettingScale = false;
-                    scalePoints = [];
-                }
-            } else if (isDrawing) {
-                if (clickTimer === null) {
-                    clickTimer = setTimeout(() => {
-                        clickTimer = null;
-                        currentPoints.push(e.pointer);
-                    }, 180);
-                } else {
-                    clearTimeout(clickTimer);
-                    clickTimer = null;
-                    if (currentPoints.length > 2) {
-                        finishPolygon();
-                    }
-                }
-            }
-        });
+        // ───────────────────────────────────────────────
+// Improved mouse:down for drawing + scale
+// ───────────────────────────────────────────────
 
-        function finishPolygon() {
-            const poly = new fabric.Polygon(currentPoints, {
-                fill: polygonColors[currentType],
-                stroke: 'black',
-                strokeWidth: 2,
-                opacity: 0.6,
-                objectCaching: false,
-                selectable: true,
-                hasControls: true,
-                type: currentType
-            });
-            canvas.add(poly);
-            polygons.push(poly);
-            canvas.setActiveObject(poly);
-            isDrawing = false;
-            currentPoints = [];
-            updateSummary();
+let tempLine = null;  // for live preview while drawing
+
+canvas.on('mouse:down', function(e) {
+    if (!e.pointer) return;
+
+    console.log('Mouse down detected at:', e.pointer);  // ← check console to confirm clicks register
+
+    if (isSettingScale) {
+        scalePoints.push(e.pointer);
+        if (scalePoints.length === 2) {
+            const pixelDist = Math.hypot(
+                scalePoints[1].x - scalePoints[0].x,
+                scalePoints[1].y - scalePoints[0].y
+            );
+            const realDist = parseFloat(prompt('Enter real-world distance in feet between the two points:'));
+            if (!isNaN(realDist) && realDist > 0) {
+                scale = realDist / pixelDist;
+                alert(`Scale set: 1 pixel ≈ ${scale.toFixed(4)} ft`);
+                updateSummary();
+            }
+            isSettingScale = false;
+            scalePoints = [];
         }
+        return;
+    }
+
+    if (isDrawing) {
+        // Add point on single click
+        currentPoints.push(e.pointer);
+
+        // Live preview: draw temporary line to last point
+        if (currentPoints.length >= 2) {
+            if (tempLine) canvas.remove(tempLine);
+            tempLine = new fabric.Line(
+                [currentPoints[currentPoints.length-2].x, currentPoints[currentPoints.length-2].y,
+                 currentPoints[currentPoints.length-1].x, currentPoints[currentPoints.length-1].y],
+                { stroke: 'red', strokeWidth: 2, selectable: false }
+            );
+            canvas.add(tempLine);
+            canvas.renderAll();
+        }
+
+        // Double-click detection moved to mouse:up for better reliability
+    }
+});
+
+canvas.on('mouse:up', function(e) {
+    if (isDrawing && currentPoints.length > 0) {
+        // Simple double-click simulation using timing
+        const now = Date.now();
+        if (this._lastClickTime && now - this._lastClickTime < 300) {  // 300ms threshold
+            // Double-click → close polygon
+            if (currentPoints.length >= 3) {
+                finishPolygon();
+            } else {
+                alert('Need at least 3 points to close a polygon.');
+            }
+        }
+        this._lastClickTime = now;
+    }
+});
+
+function finishPolygon() {
+    if (tempLine) {
+        canvas.remove(tempLine);
+        tempLine = null;
+    }
+
+    const poly = new fabric.Polygon(currentPoints, {
+        fill: polygonColors[currentType] || 'rgba(0,128,255,0.3)',
+        stroke: 'black',
+        strokeWidth: 2,
+        opacity: 0.6,
+        selectable: true,
+        hasControls: true,
+        objectCaching: false,
+        type: currentType
+    });
+
+    canvas.add(poly);
+    polygons.push(poly);
+    canvas.setActiveObject(poly);
+
+    isDrawing = false;
+    currentPoints = [];
+    canvas.selection = true;           // re-enable selection after drawing
+    canvas.renderAll();
+    updateSummary();
+    alert('Polygon added. You can now select/move/edit it.');
+}
 
         canvas.on('selection:created', e => {
             selectedPolygon = e.selected[0];
@@ -349,6 +393,5 @@
 </body>
 </html>
 
-</html>
 
 
