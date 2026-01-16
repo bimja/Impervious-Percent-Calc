@@ -3,21 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Impervious Percent Calculator</title>
+    <title>Impervious Percent Calculator + Annotations</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/4.5.0/fabric.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
         #canvas-container { position: relative; margin-bottom: 20px; }
-        #myCanvas { border: 1px solid black; }
-        #legend div { width: 160px; height: 28px; margin: 4px; padding: 6px; color: white; font-weight: bold; text-align: center; }
+        #myCanvas { border: 1px solid #444; background: #fff; }
+        #legend div { width: 160px; height: 28px; margin: 4px; padding: 6px; color: white; font-weight: bold; text-align: center; border-radius: 4px; }
         #summary { margin: 15px 0; font-size: 1.1em; font-weight: bold; background: #f8f9fa; padding: 12px; border-radius: 6px; }
-        button { margin: 6px 4px; padding: 8px 14px; }
+        button, select { margin: 6px 4px; padding: 8px 14px; cursor: pointer; }
+        .active { background: #4CAF50; color: white; }
+        #export-area { display: inline-block; } /* To keep layout tight for capture */
+        #footer { text-align: center; font-size: 0.9em; color: #555; margin-top: 10px; }
     </style>
 </head>
 <body>
-    <h1>Impervious Percent Calculator</h1>
+    <h1>Impervious Percent Calculator with Annotations</h1>
     <input type="file" id="pdf-upload" accept=".pdf">
     <button id="set-scale">Set Scale</button>
+
     <button id="add-polygon">Add Polygon</button>
     <select id="polygon-type">
         <option value="site">Site Boundary</option>
@@ -27,368 +33,588 @@
         <option value="other-impervious">Other Impervious</option>
         <option value="pervious">Pervious</option>
     </select>
+
+    <!-- New annotation buttons -->
+    <button id="add-text">Add Text</button>
+    <button id="draw-arrow">Draw Arrow/Line</button>
+    <button id="draw-dimension">Add Dimension</button>
+    <button id="freehand">Freehand Draw</button>
+
     <button id="delete-selected">Delete Selected</button>
+    <button id="undo">Undo</button>
+    <button id="redo">Redo</button>
+    <button id="cancel">Cancel</button>
     <button id="export-png">Export Canvas Only (PNG)</button>
     <button id="export-full">Export with Legend & Calc (PNG)</button>
 
-    <div id="summary">Scale not set.</div>
-    <div id="legend"></div>
+    <div id="export-area">
+        <div id="summary">Scale not set. Please set scale first.</div>
+        <div id="legend"></div>
 
-    <div id="canvas-container">
-        <canvas id="myCanvas" width="900" height="700"></canvas>
+        <div id="canvas-container">
+            <canvas id="myCanvas" width="900" height="700"></canvas>
+        </div>
+        <div id="footer">Prepared by MDI & Associates LLC</div>
     </div>
 
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.worker.min.js';
 
-        let canvas = new fabric.Canvas('myCanvas', { preserveObjectStacking: true });
-        let scale = 0; // real feet per pixel
+        const canvas = new fabric.Canvas('myCanvas', {
+            preserveObjectStacking: true,
+            selection: true
+        });
+
+        let scale = 0;
         let polygons = [];
-        let selectedPolygon = null;
+        let selectedObj = null;
         let handles = [];
         let isSettingScale = false;
         let scalePoints = [];
-        let isDrawing = false;
+        let isDrawingPolygon = false;
         let currentPoints = [];
         let currentType = '';
-        let clickTimer = null;
+        let tempLine = null;
+        let isDrawingArrow = false;
+        let arrowStart = null;
+        let isDrawingDimension = false;
+        let dimensionStart = null;
+        let isFreehand = false;
+        let undoStack = [];
+        let redoStack = [];
 
+        // Slightly more opaque colors as discussed
         const polygonColors = {
-    'site':             'rgba(0,   0,   255, 0.55)',   // medium blue
-    'building':         'rgba(220, 20,  60,  0.70)',   // strong red
-    'driveway':         'rgba(255, 140, 0,   0.70)',   // strong orange
-    'patio':            'rgba(148, 0,   211, 0.65)',   // strong purple
-    'other-impervious': 'rgba(105, 105, 105, 0.75)',   // strong gray
-    'pervious':         'rgba(34,  139, 34,  0.55)'    // medium green
-};
+            'site': 'rgba(0, 0, 255, 0.55)',
+            'building': 'rgba(220, 20, 60, 0.70)',
+            'driveway': 'rgba(255, 140, 0, 0.70)',
+            'patio': 'rgba(148, 0, 211, 0.65)',
+            'other-impervious': 'rgba(105, 105, 105, 0.75)',
+            'pervious': 'rgba(34, 139, 34, 0.55)'
+        };
 
         // Populate legend
         const legendDiv = document.getElementById('legend');
         Object.entries(polygonColors).forEach(([type, color]) => {
-            let div = document.createElement('div');
+            const div = document.createElement('div');
             div.style.backgroundColor = color;
             div.innerText = type.replace('-', ' ').toUpperCase();
             legendDiv.appendChild(div);
         });
 
-        // PDF upload and render
+        // Function to save canvas state
+        function saveState() {
+            redoStack = []; // Clear redo on new action
+            const json = JSON.stringify(canvas.toJSON(['type'])); // Include custom 'type' property
+            undoStack.push(json);
+        }
+
+        // Initial save
+        saveState();
+
+        // Hook into Fabric events to save state
+        canvas.on('object:added', saveState);
+        canvas.on('object:removed', saveState);
+        canvas.on('object:modified', saveState);
+
+        // Undo function
+        document.getElementById('undo').addEventListener('click', () => {
+            if (undoStack.length > 1) { // Keep at least initial state
+                const current = JSON.stringify(canvas.toJSON(['type']));
+                redoStack.push(current);
+                const previous = undoStack.pop();
+                canvas.loadFromJSON(previous, () => {
+                    canvas.renderAll();
+                    // Re-populate polygons array from loaded objects
+                    polygons = canvas.getObjects().filter(obj => obj instanceof fabric.Polygon);
+                    updateSummary();
+                    removeHandles(); // Clear any handles
+                });
+            }
+        });
+
+        // Redo function
+        document.getElementById('redo').addEventListener('click', () => {
+            if (redoStack.length > 0) {
+                const current = JSON.stringify(canvas.toJSON(['type']));
+                undoStack.push(current);
+                const next = redoStack.pop();
+                canvas.loadFromJSON(next, () => {
+                    canvas.renderAll();
+                    polygons = canvas.getObjects().filter(obj => obj instanceof fabric.Polygon);
+                    updateSummary();
+                    removeHandles();
+                });
+            }
+        });
+
+        // Cancel button: Exit all drawing modes and clear temps
+        document.getElementById('cancel').addEventListener('click', () => {
+            isSettingScale = false;
+            scalePoints = [];
+            isDrawingPolygon = false;
+            currentPoints = [];
+            isDrawingArrow = false;
+            arrowStart = null;
+            isDrawingDimension = false;
+            dimensionStart = null;
+            isFreehand = false;
+            canvas.isDrawingMode = false;
+            document.getElementById('freehand').classList.remove('active');
+            if (tempLine) {
+                canvas.remove(tempLine);
+                tempLine = null;
+            }
+            canvas.discardActiveObject();
+            removeHandles();
+            canvas.renderAll();
+            alert('All drawing modes cancelled.');
+        });
+
+        // ───────────────────────────────────────────────
+        // PDF Upload (same as fixed version)
+        // ───────────────────────────────────────────────
         document.getElementById('pdf-upload').addEventListener('change', function(e) {
             const file = e.target.files[0];
+            if (!file) return;
             const reader = new FileReader();
             reader.onload = function(event) {
-                const loadingTask = pdfjsLib.getDocument({data: event.target.result});
-                loadingTask.promise.then(pdf => {
+                pdfjsLib.getDocument({data: event.target.result}).promise.then(pdf => {
                     pdf.getPage(1).then(page => {
-                        const viewport = page.getViewport({scale: 1.6});
+                        const scaleFactor = 1.6;
+                        const viewport = page.getViewport({scale: scaleFactor});
                         const pdfCanvas = document.createElement('canvas');
                         pdfCanvas.width = viewport.width;
                         pdfCanvas.height = viewport.height;
-                        const context = pdfCanvas.getContext('2d');
-                        page.render({canvasContext: context, viewport}).promise.then(() => {
-                            canvas.setWidth(viewport.width);
-                            canvas.setHeight(viewport.height);
-                            canvas.setBackgroundImage(pdfCanvas.toDataURL(), canvas.renderAll.bind(canvas));
+                        const ctx = pdfCanvas.getContext('2d');
+                        page.render({canvasContext: ctx, viewport}).promise.then(() => {
+                            setTimeout(() => {
+                                fabric.Image.fromURL(pdfCanvas.toDataURL(), img => {
+                                    canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas), {
+                                        originX: 'left', originY: 'top', left: 0, top: 0
+                                    });
+                                    canvas.setWidth(viewport.width);
+                                    canvas.setHeight(viewport.height);
+                                    saveState(); // Save after PDF load
+                                });
+                            }, 100);
                         });
                     });
-                });
+                }).catch(err => console.error('PDF load error:', err));
             };
             reader.readAsArrayBuffer(file);
         });
 
-        // Set scale
+        // ───────────────────────────────────────────────
+        // Scale setting (unchanged)
+        // ───────────────────────────────────────────────
         document.getElementById('set-scale').addEventListener('click', () => {
             isSettingScale = true;
             scalePoints = [];
-            alert('Click two points on a known dimension (e.g. property line).');
+            alert('Click two points on a known dimension.');
         });
 
-        // Add polygon
+        // ───────────────────────────────────────────────
+        // Polygon drawing (your working version)
+        // ───────────────────────────────────────────────
         document.getElementById('add-polygon').addEventListener('click', () => {
             currentType = document.getElementById('polygon-type').value;
-            isDrawing = true;
+            isDrawingPolygon = true;
             currentPoints = [];
-            alert('Click points to draw polygon → double-click to finish.');
+            alert('Click points → double-click to close polygon.');
         });
-
-        // Delete selected
-        document.getElementById('delete-selected').addEventListener('click', () => {
-            if (selectedPolygon) {
-                canvas.remove(selectedPolygon);
-                polygons = polygons.filter(p => p !== selectedPolygon);
-                removeHandles();
-                selectedPolygon = null;
-                updateSummary();
-            }
-        });
-
-        // Export canvas only
-        document.getElementById('export-png').addEventListener('click', () => {
-            removeHandles();
-            const dataURL = canvas.toDataURL({ format: 'png', multiplier: 2 });
-            download(dataURL, 'impervious_canvas.png');
-            // Re-add handles if something was selected
-            if (selectedPolygon) addHandles(selectedPolygon);
-        });
-
-        // Export with legend + calculation
-        document.getElementById('export-full').addEventListener('click', () => {
-            removeHandles();
-
-            const mainW = canvas.getWidth();
-            const mainH = canvas.getHeight();
-            const padding = 40;
-            const legendW = 220;
-            const textAreaH = 140;
-
-            // Create off-screen canvas
-            const exportCanvas = document.createElement('canvas');
-            exportCanvas.width = Math.max(mainW, mainW + legendW + padding * 2);
-            exportCanvas.height = mainH + textAreaH + padding * 2;
-            const ctx = exportCanvas.getContext('2d');
-
-            // White background
-            ctx.fillStyle = 'white';
-            ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
-
-            // Draw main canvas content
-            const mainImg = new Image();
-            mainImg.src = canvas.toDataURL();
-            mainImg.onload = () => {
-                ctx.drawImage(mainImg, padding, padding);
-
-                // Draw summary text
-                ctx.fillStyle = 'black';
-                ctx.font = 'bold 18px Arial';
-                ctx.fillText('Impervious Surface Calculation', padding, mainH + padding + 30);
-
-                ctx.font = '16px Arial';
-                const summaryEl = document.getElementById('summary');
-                const lines = summaryEl.innerText.split('\n');
-                lines.forEach((line, i) => {
-                    ctx.fillText(line.trim(), padding, mainH + padding + 60 + i * 26);
-                });
-
-                // Draw legend on the right
-                ctx.font = 'bold 15px Arial';
-                ctx.fillText('LEGEND', mainW + padding * 2, padding + 30);
-
-                let y = padding + 60;
-                Object.entries(polygonColors).forEach(([type, color]) => {
-                    // Color box
-                    ctx.fillStyle = color;
-                    ctx.fillRect(mainW + padding * 2, y - 15, 30, 20);
-                    ctx.strokeStyle = '#444';
-                    ctx.lineWidth = 1;
-                    ctx.strokeRect(mainW + padding * 2, y - 15, 30, 20);
-
-                    // Label
-                    ctx.fillStyle = 'black';
-                    ctx.fillText(type.replace('-', ' ').toUpperCase(), mainW + padding * 2 + 45, y + 2);
-
-                    y += 36;
-                });
-
-                // Download
-                const dataURL = exportCanvas.toDataURL('image/png');
-                download(dataURL, 'impervious_with_legend_calc.png');
-
-                // Clean up
-                if (selectedPolygon) addHandles(selectedPolygon);
-            };
-        });
-
-        function download(dataURL, filename) {
-            const a = document.createElement('a');
-            a.href = dataURL;
-            a.download = filename;
-            a.click();
-        }
 
         // ───────────────────────────────────────────────
-        // Mouse / drawing / editing logic (unchanged from previous)
+        // New: Text annotation
         // ───────────────────────────────────────────────
-
-        // ───────────────────────────────────────────────
-// Improved mouse:down for drawing + scale
-// ───────────────────────────────────────────────
-
-let tempLine = null;  // for live preview while drawing
-
-canvas.on('mouse:down', function(e) {
-    if (!e.pointer) return;
-
-    console.log('Mouse down detected at:', e.pointer);  // ← check console to confirm clicks register
-
-    if (isSettingScale) {
-        scalePoints.push(e.pointer);
-        if (scalePoints.length === 2) {
-            const pixelDist = Math.hypot(
-                scalePoints[1].x - scalePoints[0].x,
-                scalePoints[1].y - scalePoints[0].y
-            );
-            const realDist = parseFloat(prompt('Enter real-world distance in feet between the two points:'));
-            if (!isNaN(realDist) && realDist > 0) {
-                scale = realDist / pixelDist;
-                alert(`Scale set: 1 pixel ≈ ${scale.toFixed(4)} ft`);
-                updateSummary();
-            }
-            isSettingScale = false;
-            scalePoints = [];
-        }
-        return;
-    }
-
-    if (isDrawing) {
-        // Add point on single click
-        currentPoints.push(e.pointer);
-
-        // Live preview: draw temporary line to last point
-        if (currentPoints.length >= 2) {
-            if (tempLine) canvas.remove(tempLine);
-            tempLine = new fabric.Line(
-                [currentPoints[currentPoints.length-2].x, currentPoints[currentPoints.length-2].y,
-                 currentPoints[currentPoints.length-1].x, currentPoints[currentPoints.length-1].y],
-                { stroke: 'red', strokeWidth: 2, selectable: false }
-            );
-            canvas.add(tempLine);
+        document.getElementById('add-text').addEventListener('click', () => {
+            const text = new fabric.IText('Enter text here', {
+                left: 100,
+                top: 100,
+                fontSize: 20,
+                fill: 'black',
+                fontFamily: 'Arial',
+                editable: true
+            });
+            canvas.add(text);
+            canvas.setActiveObject(text);
+            text.enterEditing(); // auto-focus for immediate typing
             canvas.renderAll();
-        }
+            // saveState() triggered by object:added
+        });
 
-        // Double-click detection moved to mouse:up for better reliability
-    }
-});
+        // ───────────────────────────────────────────────
+        // New: Arrow/Line drawing (click-drag)
+        // ───────────────────────────────────────────────
+        document.getElementById('draw-arrow').addEventListener('click', () => {
+            isDrawingArrow = true;
+            alert('Click and drag to draw an arrow/line.');
+        });
 
-canvas.on('mouse:up', function(e) {
-    if (isDrawing && currentPoints.length > 0) {
-        // Simple double-click simulation using timing
-        const now = Date.now();
-        if (this._lastClickTime && now - this._lastClickTime < 300) {  // 300ms threshold
-            // Double-click → close polygon
-            if (currentPoints.length >= 3) {
-                finishPolygon();
-            } else {
-                alert('Need at least 3 points to close a polygon.');
+        // ───────────────────────────────────────────────
+        // New: Dimension drawing (click-drag, with label)
+        // ───────────────────────────────────────────────
+        document.getElementById('draw-dimension').addEventListener('click', () => {
+            if (scale === 0) {
+                alert('Please set the scale first to enable accurate measurements.');
+                return;
             }
+            isDrawingDimension = true;
+            alert('Click and drag to draw a dimension line. The distance will be calculated based on the scale.');
+        });
+
+        // ───────────────────────────────────────────────
+        // New: Freehand drawing toggle
+        // ───────────────────────────────────────────────
+        document.getElementById('freehand').addEventListener('click', () => {
+            isFreehand = !isFreehand;
+            canvas.isDrawingMode = isFreehand;
+            canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
+            canvas.freeDrawingBrush.color = 'red';
+            canvas.freeDrawingBrush.width = 3;
+            document.getElementById('freehand').classList.toggle('active', isFreehand);
+        });
+
+        // ───────────────────────────────────────────────
+        // Unified mouse:down handler
+        // ───────────────────────────────────────────────
+        canvas.on('mouse:down', function(e) {
+            if (!e.pointer) return;
+
+            if (isSettingScale) {
+                scalePoints.push({ x: e.pointer.x, y: e.pointer.y });  // explicit object
+
+                if (scalePoints.length === 1) {
+                    alert('First point set. Now click the second point.');
+                }
+
+                if (scalePoints.length === 2) {
+                    const dx = scalePoints[1].x - scalePoints[0].x;
+                    const dy = scalePoints[1].y - scalePoints[0].y;
+                    const pixelDist = Math.sqrt(dx*dx + dy*dy);  // more precise than hypot in some cases
+
+                    const input = prompt('Enter the REAL distance between these two points in **FEET** (e.g. 50 or 25.5):');
+                    const realDist = parseFloat(input);
+
+                    if (isNaN(realDist) || realDist <= 0) {
+                        alert('Invalid distance. Scale not set. Try again.');
+                    } else {
+                        scale = realDist / pixelDist;
+                        console.log(`Scale calculated: ${realDist} ft / ${pixelDist.toFixed(2)} px = ${scale.toFixed(6)} ft/px`);
+                        alert(`Scale set successfully!\n1 pixel = ${scale.toFixed(4)} feet`);
+                        updateSummary();
+                        saveState(); // Save after scale set (though scale is separate, for consistency)
+                    }
+
+                    isSettingScale = false;
+                    scalePoints = [];
+                }
+                return;  // important: prevent falling into polygon drawing
+            }
+
+            if (isDrawingArrow) {
+                arrowStart = e.pointer;
+                return;
+            }
+
+            if (isDrawingDimension) {
+                dimensionStart = e.pointer;
+                return;
+            }
+
+            if (isDrawingPolygon) {
+                currentPoints.push(e.pointer);
+                if (currentPoints.length >= 2) {
+                    if (tempLine) canvas.remove(tempLine);
+                    tempLine = new fabric.Line([
+                        currentPoints[currentPoints.length-2].x, currentPoints[currentPoints.length-2].y,
+                        currentPoints[currentPoints.length-1].x, currentPoints[currentPoints.length-1].y
+                    ], { stroke: 'red', strokeWidth: 2, selectable: false });
+                    canvas.add(tempLine);
+                }
+            }
+        });
+
+        canvas.on('mouse:move', function(e) {
+            if (isDrawingArrow && arrowStart) {
+                if (tempLine) canvas.remove(tempLine);
+                tempLine = createArrow(arrowStart, e.pointer);
+                canvas.add(tempLine);
+                canvas.renderAll();
+            }
+
+            if (isDrawingDimension && dimensionStart) {
+                if (tempLine) canvas.remove(tempLine);
+                tempLine = createDimension(dimensionStart, e.pointer, true); // Temp without label
+                canvas.add(tempLine);
+                canvas.renderAll();
+            }
+        });
+
+        canvas.on('mouse:up', function(e) {
+            if (isDrawingArrow && arrowStart) {
+                if (tempLine) canvas.remove(tempLine);
+                const arrow = createArrow(arrowStart, e.pointer);
+                canvas.add(arrow);
+                canvas.renderAll();
+                arrowStart = null;
+                // saveState() triggered by object:added
+            }
+
+            if (isDrawingDimension && dimensionStart) {
+                if (tempLine) canvas.remove(tempLine);
+                const dimension = createDimension(dimensionStart, e.pointer);
+                canvas.add(dimension);
+                canvas.renderAll();
+                dimensionStart = null;
+                isDrawingDimension = false;
+                // saveState() triggered by object:added
+            }
+
+            if (isDrawingPolygon && currentPoints.length > 0) {
+                const now = Date.now();
+                if (this._lastClick && now - this._lastClick < 300) {
+                    if (currentPoints.length >= 3) finishPolygon();
+                }
+                this._lastClick = now;
+            }
+        });
+
+        function createArrow(start, end) {
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const angle = Math.atan2(dy, dx);
+            const headlen = 15;
+
+            const head1x = end.x - headlen * Math.cos(angle - Math.PI/6);
+            const head1y = end.y - headlen * Math.sin(angle - Math.PI/6);
+            const head2x = end.x - headlen * Math.cos(angle + Math.PI/6);
+            const head2y = end.y - headlen * Math.sin(angle + Math.PI/6);
+
+            const pathStr = `M ${start.x} ${start.y} L ${end.x} ${end.y} M ${end.x} ${end.y} L ${head1x} ${head1y} M ${end.x} ${end.y} L ${head2x} ${head2y}`;
+
+            return new fabric.Path(pathStr, {
+                stroke: 'red',
+                strokeWidth: 3,
+                fill: false,
+                selectable: true,
+                objectCaching: false
+            });
         }
-        this._lastClickTime = now;
-    }
-});
 
-function finishPolygon() {
-    if (tempLine) {
-        canvas.remove(tempLine);
-        tempLine = null;
-    }
+        // New: Create dimension (double-headed arrow with label)
+        function createDimension(start, end, isTemp = false) {
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const angle = Math.atan2(dy, dx);
+            const headlen = 15;
 
-    const poly = new fabric.Polygon(currentPoints, {
-        fill: polygonColors[currentType] || 'rgba(0,128,255,0.3)',
-        stroke: 'black',
-        strokeWidth: 2,
-        opacity: 0.6,
-        selectable: true,
-        hasControls: true,
-        objectCaching: false,
-        type: currentType
-    });
+            // Arrow at end
+            const head1x = end.x - headlen * Math.cos(angle - Math.PI/6);
+            const head1y = end.y - headlen * Math.sin(angle - Math.PI/6);
+            const head2x = end.x - headlen * Math.cos(angle + Math.PI/6);
+            const head2y = end.y - headlen * Math.sin(angle + Math.PI/6);
 
-    canvas.add(poly);
-    polygons.push(poly);
-    canvas.setActiveObject(poly);
+            // Arrow at start (reverse)
+            const revAngle = angle + Math.PI;
+            const head3x = start.x - headlen * Math.cos(revAngle - Math.PI/6);
+            const head3y = start.y - headlen * Math.sin(revAngle - Math.PI/6);
+            const head4x = start.x - headlen * Math.cos(revAngle + Math.PI/6);
+            const head4y = start.y - headlen * Math.sin(revAngle + Math.PI/6);
 
-    isDrawing = false;
-    currentPoints = [];
-    canvas.selection = true;           // re-enable selection after drawing
-    canvas.renderAll();
-    updateSummary();
-    alert('Polygon added. You can now select/move/edit it.');
-}
+            const pathStr = `M ${start.x} ${start.y} L ${end.x} ${end.y} ` +
+                            `M ${end.x} ${end.y} L ${head1x} ${head1y} M ${end.x} ${end.y} L ${head2x} ${head2y} ` +
+                            `M ${start.x} ${start.y} L ${head3x} ${head3y} M ${start.x} ${start.y} L ${head4x} ${head4y}`;
 
-        canvas.on('selection:created', e => {
-            selectedPolygon = e.selected[0];
-            if (selectedPolygon?.type === 'polygon') addHandles(selectedPolygon);
-        });
+            const dimPath = new fabric.Path(pathStr, {
+                stroke: 'blue',
+                strokeWidth: 2,
+                fill: false,
+                selectable: true,
+                objectCaching: false
+            });
 
-        canvas.on('selection:updated', e => {
-            removeHandles();
-            selectedPolygon = e.selected[0];
-            if (selectedPolygon?.type === 'polygon') addHandles(selectedPolygon);
-        });
+            if (isTemp) {
+                return dimPath; // For preview, no label
+            }
 
-        canvas.on('selection:cleared', () => {
-            removeHandles();
-            selectedPolygon = null;
-        });
+            // Calculate real distance
+            const pixelDist = Math.sqrt(dx * dx + dy * dy);
+            const realDist = (pixelDist * scale).toFixed(2);
 
-        canvas.on('object:modified', updateSummary);
+            // Label positioned above the line, midway
+            const midX = (start.x + end.x) / 2;
+            const midY = (start.y + end.y) / 2 - 15; // Offset above
+            const label = new fabric.Text(`${realDist} ft`, {
+                left: midX,
+                top: midY,
+                fontSize: 14,
+                fill: 'blue',
+                originX: 'center',
+                originY: 'center',
+                angle: angle * (180 / Math.PI), // Rotate to match line
+                selectable: true
+            });
 
+            // Group the path and label for easy manipulation
+            const group = new fabric.Group([dimPath, label], {
+                selectable: true,
+                hasControls: true
+            });
+
+            return group;
+        }
+
+        function finishPolygon() {
+            if (tempLine) canvas.remove(tempLine);
+            tempLine = null;
+
+            const poly = new fabric.Polygon(currentPoints, {
+                fill: polygonColors[currentType],
+                stroke: 'black',
+                strokeWidth: 2,
+                opacity: 0.6,
+                selectable: true,
+                type: currentType
+            });
+            canvas.add(poly);
+            polygons.push(poly);
+            canvas.setActiveObject(poly);
+            isDrawingPolygon = false;
+            currentPoints = [];
+            updateSummary();
+            // saveState() triggered by object:added
+        }
+
+        // Polygon area calculation using shoelace formula
+        function getPolygonArea(points) {
+            let area = 0;
+            const n = points.length;
+            for (let i = 0; i < n; i++) {
+                const j = (i + 1) % n;
+                area += points[i].x * points[j].y - points[j].x * points[i].y;
+            }
+            return Math.abs(area) / 2;
+        }
+
+        // Update summary with real areas and impervious %
+        function updateSummary() {
+            if (scale === 0) {
+                document.getElementById('summary').innerText = 'Scale not set. Please set scale first.';
+                return;
+            }
+
+            let siteArea = 0;
+            let imperviousArea = 0;
+            polygons.forEach(poly => {
+                const pixelArea = getPolygonArea(poly.points);
+                const realArea = pixelArea * scale * scale;
+                if (poly.type === 'site') {
+                    siteArea += realArea;
+                } else if (poly.type !== 'pervious' && poly.type !== 'site') {
+                    imperviousArea += realArea;
+                }
+            });
+
+            const percent = siteArea > 0 ? (imperviousArea / siteArea * 100).toFixed(2) : 0;
+            document.getElementById('summary').innerText = `Site Area: ${siteArea.toFixed(2)} sq ft\nImpervious Area: ${imperviousArea.toFixed(2)} sq ft\nImpervious %: ${percent}%`;
+        }
+
+        // Add editable handles to selected polygon
         function addHandles(poly) {
             removeHandles();
-            poly.points.forEach((pt, i) => {
+            poly.points.forEach((p, idx) => {
                 const handle = new fabric.Circle({
-                    left: pt.x,
-                    top: pt.y,
-                    radius: 6,
-                    fill: 'white',
-                    stroke: 'black',
-                    strokeWidth: 2,
+                    left: poly.left + p.x,
+                    top: poly.top + p.y,
+                    radius: 5,
+                    fill: 'blue',
+                    stroke: 'white',
+                    strokeWidth: 1,
                     originX: 'center',
                     originY: 'center',
-                    selectable: true,
                     hasControls: false,
                     hasBorders: false,
-                    index: i,
+                    idx: idx,
                     parent: poly
-                });
-                handle.on('moving', function() {
-                    const p = handle.parent.points[handle.index];
-                    p.x = handle.left;
-                    p.y = handle.top;
-                    handle.parent.set({ points: [...handle.parent.points] });
-                    handle.parent.setCoords();
-                    canvas.renderAll();
                 });
                 canvas.add(handle);
                 handles.push(handle);
             });
         }
 
+        // Remove handles
         function removeHandles() {
             handles.forEach(h => canvas.remove(h));
             handles = [];
         }
 
-        function getPolygonArea(points) {
-            let area = 0;
-            let j = points.length - 1;
-            for (let i = 0; i < points.length; i++) {
-                area += (points[j].x + points[i].x) * (points[j].y - points[i].y);
-                j = i;
+        // Handle moving a vertex handle
+        canvas.on('object:moving', function(e) {
+            const obj = e.target;
+            if (obj && obj.parent) { // It's a handle
+                const poly = obj.parent;
+                const idx = obj.idx;
+                poly.points[idx].x = obj.left - poly.left;
+                poly.points[idx].y = obj.top - poly.top;
+                poly.setCoords();
+                canvas.renderAll();
+                updateSummary(); // Recalc on edit
             }
-            return Math.abs(area / 2);
-        }
+        });
 
-        function updateSummary() {
-            if (scale === 0) {
-                document.getElementById('summary').innerHTML = 'Scale not set. Please set scale first.';
-                return;
+        // Selection events
+        canvas.on('selection:created', e => {
+            selectedObj = e.selected[0];
+            if (selectedObj instanceof fabric.Polygon) {
+                addHandles(selectedObj);
             }
-            let siteArea = 0;
-            let impArea = 0;
-            polygons.forEach(poly => {
-                const pxArea = getPolygonArea(poly.points);
-                const realArea = pxArea * scale * scale;
-                if (poly.type === 'site') {
-                    siteArea += realArea;
-                } else if (['building','driveway','patio','other-impervious'].includes(poly.type)) {
-                    impArea += realArea;
-                }
-            });
-            const percent = siteArea > 0 ? (impArea / siteArea * 100).toFixed(2) : '0.00';
-            document.getElementById('summary').innerHTML = 
-                `Site Area: ${siteArea.toFixed(0)} sq ft<br>` +
-                `Impervious Area: ${impArea.toFixed(0)} sq ft<br>` +
-                `Impervious Percentage: ${percent}%`;
-        }
+        });
+        canvas.on('selection:updated', e => {
+            removeHandles();
+            selectedObj = e.selected[0];
+            if (selectedObj instanceof fabric.Polygon) {
+                addHandles(selectedObj);
+            }
+        });
+        canvas.on('selection:cleared', () => {
+            selectedObj = null;
+            removeHandles();
+        });
+
+        // Delete selected
+        document.getElementById('delete-selected').addEventListener('click', () => {
+            if (selectedObj) {
+                canvas.remove(selectedObj);
+                if (polygons.includes(selectedObj)) polygons = polygons.filter(p => p !== selectedObj);
+                selectedObj = null;
+                removeHandles();
+                updateSummary();
+                // saveState() triggered by object:removed
+            }
+        });
+
+        // Export canvas as PNG
+        document.getElementById('export-png').addEventListener('click', () => {
+            const dataURL = canvas.toDataURL({ format: 'png', multiplier: 2 });
+            const a = document.createElement('a');
+            a.href = dataURL;
+            a.download = 'canvas.png';
+            a.click();
+        });
+
+        // Export full with html2canvas
+        document.getElementById('export-full').addEventListener('click', () => {
+            html2canvas(document.getElementById('export-area'), { scale: 2 }).then(c => {
+                const dataURL = c.toDataURL('image/png');
+                const a = document.createElement('a');
+                a.href = dataURL;
+                a.download = 'full-export.png';
+                a.click();
+            }).catch(err => console.error('Export error:', err));
+        });
     </script>
 </body>
 </html>
+</html>
+
